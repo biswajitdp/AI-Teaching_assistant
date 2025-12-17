@@ -307,7 +307,6 @@ def generate_agent(state: AgentState) -> AgentState:
                 final_response += f"\n\n{translated_image_msg}"
             
             final_page_num = page_num
-        else:
             final_response = translated_response
             final_page_num = state.get("page_num")
             show_images = False
@@ -479,6 +478,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
