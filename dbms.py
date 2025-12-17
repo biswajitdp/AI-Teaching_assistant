@@ -5,12 +5,9 @@ import io
 import logging
 from datetime import datetime
 from typing import TypedDict, List, Optional
-
 import fitz  # PyMuPDF
 from pypdf import PdfReader
 from dotenv import load_dotenv
-
-# ===== LangChain (LATEST) =====
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
@@ -18,8 +15,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
-
-# ===== LangGraph =====
 from langgraph.graph import StateGraph, END
 
 # Configure logging with detailed format
@@ -431,6 +426,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
