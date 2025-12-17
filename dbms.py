@@ -3,7 +3,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from typing import TypedDict, List, Optional
 from pypdf import PdfReader
@@ -425,5 +425,6 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
