@@ -213,17 +213,16 @@ AUGMENT_PROMPT = ChatPromptTemplate.from_messages([
 
 GENERATE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
-        You are the Generate Agent. Your task is to create a detailed response based on the augmented content.
-        - The query may have been translated to English, so interpret it broadly as related to Database Management Systems (DBMS) or SQL, even if the phrasing is slightly unclear.
-        - Examples of DBMS-related topics include: database models (hierarchical, network, relational), SQL queries, database design, normalization, transactions, etc.
-        - If the query is clearly unrelated to DBMS (e.g., asking about cooking or history), reply 'Not applicable' with no images displayed.
-        - Always append 'Source: Page X', (where X indicates the page number which will always be of type integer) at the end of the response if a page number is available in the augmented content or state. If no page number is available, append 'Source: Not specified.
+        You are the Generate Agent. Your task is to create a detailed, accurate response based on the augmented content.
+        - The query may have been translated to English, so interpret it broadly as related to Database Management Systems (DBMS) or SQL.
+        - Examples: database models, SQL queries, normalization, transactions, etc.
+        - If the query is clearly unrelated to DBMS, reply only: "Not applicable"
+        - Do NOT mention source page or images — these will be handled separately.
         - Use the chat history to maintain context.
-        - Do NOT append any message about images; this will be handled separately.
-        - The response will be translated to the user's input language after generation.
+        - The response will be translated to the user's language later.
     """),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "Query: {query}\nAugmented content: {augmented_content}\nPage number: {page_num}"),
+    ("human", "Query: {query}\nAugmented content: {augmented_content}"),
 ])
 
 # Define Multi-Agent Nodes
@@ -251,29 +250,48 @@ def generate_agent(state: AgentState) -> AgentState:
     logger.info(f"Generate Agent processing query: {state['query']}")
     chain = GENERATE_PROMPT | LLM
     try:
+        # Translate query to English for better understanding
+        english_query = multilingual_translate(state["query"], source_lang=state["input_language"], destination_language="English")
+        
         response = chain.invoke({
-            "query": multilingual_translate(state["query"], source_lang=state["input_language"], destination_language="English"),
+            "query": english_query,
             "augmented_content": state["augmented_content"] or "No augmented content.",
-            "page_num": str(state["page_num"]) if state["page_num"] else "None",
             "chat_history": state["chat_history"]
         })
-        if "Not applicable" in response.content:
-            state["image_data"] = []
-            translated_response = multilingual_translate(response.content, source_lang="English", destination_language=state["input_language"])
+
+        raw_response = response.content.strip()
+
+        # Handle off-topic queries
+        if "Not applicable" in raw_response.lower():
+            translated_response = multilingual_translate("Not applicable", "English", state["input_language"])
+            state["image_data"] = []  # No images for off-topic
         else:
-            translated_response = multilingual_translate(response.content, source_lang="English", destination_language=state["input_language"])
+            # Translate the main answer
+            translated_response = multilingual_translate(raw_response, "English", state["input_language"])
+
+            # === CRITICAL FIX: Append source with NUMERIC page number AFTER translation ===
+            page_num = state.get("page_num")
+            if page_num is not None:
+                source_text = multilingual_translate(f"Source: Page {page_num}", "English", state["input_language"])
+                translated_response += f"\n\n{source_text}"
+            else:
+                source_text = multilingual_translate("Source: Not specified", "English", state["input_language"])
+                translated_response += f"\n\n{source_text}"
+
+            # Add image availability message (translated)
             if state["image_data"]:
-                image_message = "Relevant diagrams are available for this topic."
-                translated_image_message = multilingual_translate(image_message, source_lang="English", destination_language=state["input_language"])
-                translated_response += f"\n\n{translated_image_message}"
-        logger.info(f"Generate Agent response: {translated_response[:50]}...")
+                image_msg_en = "Relevant diagrams are available for this topic."
+                image_msg_translated = multilingual_translate(image_msg_en, "English", state["input_language"])
+                translated_response += f"\n\n{image_msg_translated}"
+
+        logger.info(f"Final response ready (page {page_num})")
         return {"response": translated_response}
+
     except Exception as e:
         logger.error(f"Error in Generate Agent: {e}")
-        error_msg = f"Error generating response: {str(e)}"
-        translated_error = multilingual_translate(error_msg, source_lang="English", destination_language=state["input_language"])
-        return {"response": translated_error}
-
+        error_msg = multilingual_translate(f"Error generating response: {str(e)}", "English", state["input_language"])
+        return {"response": error_msg}
+        
 # Define Conditional Edge Logic
 def decide_augmentation(state: AgentState) -> str:
     logger.info("Deciding augmentation path")
@@ -426,6 +444,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
