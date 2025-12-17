@@ -1,20 +1,26 @@
 import streamlit as st
+import os
+import re
+import io
+import logging
+from datetime import datetime
+from typing import TypedDict, List, Optional
+
+import fitz  # PyMuPDF
+from pypdf import PdfReader
+from dotenv import load_dotenv
+
+# ===== LangChain (LATEST) =====
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.output_parsers import StrOutputParser
+
+# ===== LangGraph =====
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, List, Optional
-from pypdf import PdfReader
-import re
-import os
-import fitz  # PyMuPDF for image extraction
-from dotenv import load_dotenv
-import io  # For in-memory image handling
-import logging
-from langchain.schema import HumanMessage, SystemMessage
-from datetime import datetime
 
 # Configure logging with detailed format
 logging.basicConfig(
@@ -425,6 +431,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
