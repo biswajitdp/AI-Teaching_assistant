@@ -221,6 +221,7 @@ GENERATE_PROMPT = ChatPromptTemplate.from_messages([
         - Do not write anything like "Source:", "Page", "diagram available", etc.
         - If the question is not related to DBMS/SQL, reply only: "Not applicable"
         - Just give the clean educational answer.
+        -always provide page number "source: page-x" always numric page number provide not in numeric.
     """),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "User Query: {query}\n\nContent from book:\n{augmented_content}"),
@@ -460,6 +461,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
