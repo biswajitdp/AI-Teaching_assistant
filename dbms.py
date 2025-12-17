@@ -213,18 +213,17 @@ AUGMENT_PROMPT = ChatPromptTemplate.from_messages([
 
 GENERATE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
-        You are an expert teaching assistant for Database Management Systems (DBMS).
-        Provide clear, accurate, and detailed answers based only on the given content.
+        You are an expert AI Tutor for Database Management Systems (DBMS).
+        Provide clear, detailed, and accurate answers strictly based on the given content.
         
-        Rules:
-        - Answer in a helpful, educational tone.
-        - If the query is unrelated to DBMS or SQL, respond only with: "Not applicable"
-        - Never mention page numbers, sources, or images in your response.
-        - Do not say anything like "Source:", "Page", "diagram", etc.
-        - Your answer will be translated and formatted later — just give clean content.
+        Important Rules:
+        - Never mention page numbers, sources, diagrams, or images.
+        - Do not write anything like "Source:", "Page", "diagram available", etc.
+        - If the question is not related to DBMS/SQL, reply only: "Not applicable"
+        - Just give the clean educational answer.
     """),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "Query: {query}\n\nRelevant content from book:\n{augmented_content}"),
+    ("human", "User Query: {query}\n\nContent from book:\n{augmented_content}"),
 ])
 
 # Define Multi-Agent Nodes
@@ -249,15 +248,15 @@ def augment_agent(state: AgentState) -> AgentState:
     return {"augmented_content": augmented_content}
 
 def generate_agent(state: AgentState) -> AgentState:
-    logger.info("Generate Agent: Starting response generation")
+    logger.info("Generate Agent: Generating response")
     chain = GENERATE_PROMPT | LLM
     
     try:
-        # Translate query to English for better retrieval/understanding
+        # Translate query to English for accurate understanding
         english_query = multilingual_translate(
             state["query"], 
-            source_lang=state["input_language"], 
-            destination_language="English"
+            state["input_language"], 
+            "English"
         )
         
         response = chain.invoke({
@@ -268,64 +267,70 @@ def generate_agent(state: AgentState) -> AgentState:
         
         raw_answer = response.content.strip()
         
-        # Handle off-topic queries
+        # Check if off-topic
         if "not applicable" in raw_answer.lower():
-            translated_response = multilingual_translate(
-                "This question is not related to the DBMS material.",
+            translated_answer = multilingual_translate(
+                "This question is not covered in the DBMS material.",
                 "English",
                 state["input_language"]
             )
-            final_response = translated_response
+            final_response = translated_answer
             final_page_num = None
-            show_images = False
+            image_data_to_use = []
         else:
-            # Translate the actual answer
-            translated_response = multilingual_translate(
+            # Translate the main answer
+            translated_answer = multilingual_translate(
                 raw_answer, 
                 "English", 
                 state["input_language"]
             )
             
-            # === FINAL FIX: We append source with NUMERIC page number ===
+            # === GUARANTEED: Always add numeric source ===
             page_num = state.get("page_num")
-            if page_num is not None:
-                source_line_en = f"Source: Page {page_num}"
+            if page_num is not None and page_num > 0:
+                source_line = f"Source: Page {page_num}"
             else:
-                source_line_en = "Source: Not specified"
+                source_line = "Source: Not specified"
                 
             translated_source = multilingual_translate(
-                source_line_en, "English", state["input_language"]
+                source_line, "English", state["input_language"]
             )
             
-            final_response = translated_response + f"\n\n{translated_source}"
+            final_response = translated_answer + f"\n\n{translated_source}"
             
-            # Add image message only if images exist
-            show_images = bool(state.get("image_data"))
-            if show_images:
-                image_msg = "Relevant diagrams are available for this topic."
-                translated_image_msg = multilingual_translate(image_msg, "English", state["input_language"])
-                final_response += f"\n\n{translated_image_msg}"
+            # Add image message if images exist
+            if state.get("image_data"):
+                image_note = "Relevant diagrams are available for this topic."
+                translated_image_note = multilingual_translate(
+                    image_note, "English", state["input_language"]
+                )
+                final_response += f"\n\n{translated_image_note}"
+                image_data_to_use = state["image_data"]
+            else:
+                image_data_to_use = []
             
             final_page_num = page_num
-            final_response = translated_response
-            final_page_num = state.get("page_num")
-            show_images = False
-
-        logger.info(f"Generated response with source page: {final_page_num}")
-
+            
+        logger.info(f"Final response generated with page: {final_page_num}")
+        
         return {
             "response": final_response,
-            "page_num": final_page_num,  # preserve for image display
-            "image_data": [] if not show_images else state["image_data"]
+            "page_num": final_page_num,
+            "image_data": image_data_to_use
         }
-
+        
     except Exception as e:
         logger.error(f"Error in generate_agent: {e}")
         error_msg = multilingual_translate(
-            "Sorry, there was an error processing your question.",
-            "English", state["input_language"]
+            "Sorry, an error occurred while processing your question.",
+            "English",
+            state["input_language"]
         )
-        return {"response": error_msg}
+        return {
+            "response": error_msg,
+            "page_num": None,
+            "image_data": []
+        }
 
 # Define Conditional Edge Logic
 def decide_augmentation(state: AgentState) -> str:
@@ -478,6 +483,7 @@ if __name__ == "__main__":
     main()
 
     
+
 
 
 
