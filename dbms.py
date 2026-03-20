@@ -711,16 +711,6 @@ def main():
                 "Marathi", "Kannada", "Malayalam", "Gujarati",
             ],
         )
-        st.markdown("---")
-        if st.button("🗑️ Clear Conversation"):
-            st.session_state.messages = []
-            st.rerun()
-        st.markdown("---")
-        st.caption(
-            "ℹ️ Follow-up questions (like 'summarize', 'explain again') "
-            "reuse the page number and images from the previous answer.\n\n"
-            "ℹ️ Diagrams are shown only when they exist on the retrieved page."
-        )
 
     # ── Session initialisation ────────────────────────────────────
     if "vectordb" not in st.session_state:
