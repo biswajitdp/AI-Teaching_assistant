@@ -695,10 +695,6 @@ def main():
     st.title("📚 AI Professor Assistant")
     st.markdown(
         "Ask any question from your **DBMS book** in any language. "
-        "Get detailed answers with source page numbers and diagrams "
-        "**only when diagrams exist on that page**. "
-        "Follow-up questions (summarize, clarify, explain again) reuse the "
-        "same page and images as the previous answer."
     )
 
     # ── Sidebar ──────────────────────────────────────────────────
