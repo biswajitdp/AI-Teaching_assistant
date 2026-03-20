@@ -3,7 +3,6 @@ import os
 import re
 import io
 import logging
-from datetime import datetime
 from typing import TypedDict, List, Optional
 import fitz  # PyMuPDF
 from pypdf import PdfReader
@@ -17,49 +16,92 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, END
 
-# Configure logging with detailed format
+# ══════════════════════════════════════════════════════════════════
+# Logging
+# ══════════════════════════════════════════════════════════════════
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler()  # Output to terminal
-        # Optionally add FileHandler for persistent logs
-        # logging.FileHandler('ai_tutor.log')
-    ]
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
-
+# ══════════════════════════════════════════════════════════════════
 # Configuration
-PDF_FILE_PATH = "dbms_notes.pdf"  # Replace with your PDF path
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # Load from environment variable
-LLM = ChatOpenAI(model_name="gpt-4o", temperature=0.0, api_key=OPENAI_API_KEY)
+# ══════════════════════════════════════════════════════════════════
+load_dotenv()
+PDF_FILE_PATH  = "dbms_notes.pdf"           # ← replace with your PDF path
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+LLM            = ChatOpenAI(model_name="gpt-4o", temperature=0.0, api_key=OPENAI_API_KEY)
 
-# Formatting for Streamlit display (LaTeX support and deduplication)
-def format_for_display(text):
-    logger.info("Formatting text for display")
-    def replace_latex(match):
-        latex_expr = match.group(1)
-        return f"$${latex_expr}$$"  # Use $$ for Streamlit Markdown to render LaTeX
-    text = re.sub(r'\\frac\{([^}]+)\}\{([^}]+)\}', r'$\\frac{\1}{\2}$', text)
-    
+# ══════════════════════════════════════════════════════════════════
+# Word-number → integer helpers
+# ══════════════════════════════════════════════════════════════════
+WORD_TO_INT = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60, "seventy": 70,
+    "eighty": 80, "ninety": 90, "hundred": 100,
+}
+
+
+def words_to_int(text: str) -> Optional[int]:
+    """'twenty five' → 25.  Returns None on failure."""
+    text = text.strip().lower().replace("-", " ")
+    if text.isdigit():
+        return int(text)
+    total = 0
+    for part in text.split():
+        val = WORD_TO_INT.get(part)
+        if val is None:
+            return None
+        total += val
+    return total if total > 0 else None
+
+
+def force_int_page(value) -> Optional[int]:
+    """Accept int / digit-string / word-number / None — always returns int or None."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    result = words_to_int(s)
+    if result is not None:
+        return result
+    m = re.search(r"\d+", s)
+    if m:
+        return int(m.group())
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════
+# Display helpers
+# ══════════════════════════════════════════════════════════════════
+def format_for_display(text: str) -> str:
+    """LaTeX-safe formatting + deduplicate diagram note lines."""
+    text = re.sub(r"\\frac\{([^}]+)\}\{([^}]+)\}", r"$\\frac{\1}{\2}$", text)
     lines = text.split("\n")
-    seen = set()
-    deduplicated_lines = []
+    seen: set = set()
+    out: List[str] = []
     for line in lines:
-        if "Relevant diagrams are available for this topic" in line:
+        if "Relevant diagrams" in line or "relevant diagrams" in line:
             if line not in seen:
                 seen.add(line)
-                deduplicated_lines.append(line)
+                out.append(line)
         else:
-            deduplicated_lines.append(line)
-    
-    return "\n".join(deduplicated_lines)
+            out.append(line)
+    return "\n".join(out)
 
-# Extract text from PDF with page numbers
-def extract_text_from_pdf(pdf_path):
+
+# ══════════════════════════════════════════════════════════════════
+# PDF Processing
+# ══════════════════════════════════════════════════════════════════
+def extract_text_from_pdf(pdf_path: str):
     logger.info(f"Extracting text from PDF: {pdf_path}")
     try:
         pdf = PdfReader(pdf_path)
@@ -70,405 +112,591 @@ def extract_text_from_pdf(pdf_path):
             text = re.sub(r"(?<!\n\s)\n(?!\s\n)", " ", text.strip())
             text = re.sub(r"\n\s*\n", "\n\n", text)
             output.append((text, i))
-        logger.info(f"Successfully extracted text from {len(output)} pages")
+        logger.info(f"Extracted text from {len(output)} pages")
         return output
     except Exception as e:
         logger.error(f"Error reading PDF: {e}")
         return []
 
-# Extract images from PDF and store in memory
-def extract_images_from_pdf(pdf_path):
+
+def extract_images_from_pdf(pdf_path: str) -> dict:
+    """Returns {page_number (int): [image_bytes, ...]}"""
     logger.info(f"Extracting images from PDF: {pdf_path}")
     try:
         doc = fitz.open(pdf_path)
-        image_data = {}
+        image_data: dict = {}
         for page_num in range(doc.page_count):
             page = doc[page_num]
-            images = page.get_images(full=True)
-            for img_index, img in enumerate(images):
+            for img in page.get_images(full=True):
                 xref = img[0]
                 base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                if not image_bytes:
-                    continue
-                if page_num + 1 not in image_data:
-                    image_data[page_num + 1] = []
-                image_data[page_num + 1].append(image_bytes)
+                img_bytes = base_image.get("image")
+                if img_bytes:
+                    image_data.setdefault(page_num + 1, []).append(img_bytes)
         doc.close()
-        logger.info(f"Extracted images from {len(image_data)} pages")
+        logger.info(f"Images found on pages: {sorted(image_data.keys())}")
         return image_data
     except Exception as e:
         logger.error(f"Error extracting images: {e}")
         return {}
-    
-# Convert text to LangChain Documents
-def text_to_docs(text_with_pages):
+
+
+def text_to_docs(text_with_pages) -> List[Document]:
     logger.info("Converting text to LangChain Documents")
+    splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
     docs = []
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
     for text, page_num in text_with_pages:
-        chunks = text_splitter.split_text(text)
-        for chunk in chunks:
-            doc = Document(
+        for chunk in splitter.split_text(text):
+            docs.append(Document(
                 page_content=chunk,
-                metadata={"source": f"page-{page_num}", "page_num": page_num}
-            )
-            docs.append(doc)
-    logger.info(f"Created {len(docs)} documents")
+                metadata={"source": f"page-{page_num}", "page_num": page_num},
+            ))
+    logger.info(f"Created {len(docs)} document chunks")
     return docs
 
-# Create FAISS vector database
-def create_vectordb(pdf_path):
-    logger.info("Creating FAISS vector database")
-    text_with_pages = extract_text_from_pdf(pdf_path)
-    if not text_with_pages:
-        logger.error("No text extracted from PDF")
+
+def create_vectordb(pdf_path: str):
+    logger.info("Building FAISS vector database")
+    pages = extract_text_from_pdf(pdf_path)
+    if not pages:
         raise ValueError("No text extracted from PDF.")
-    docs = text_to_docs(text_with_pages)
+    docs = text_to_docs(pages)
     embeddings = OpenAIEmbeddings(api_key=OPENAI_API_KEY)
     vectordb = FAISS.from_documents(docs, embeddings)
-    logger.info("FAISS vector database created successfully")
+    logger.info("FAISS vector database ready")
     return vectordb
 
-# Multilingual Translation
+
+# ══════════════════════════════════════════════════════════════════
+# Translation
+# ══════════════════════════════════════════════════════════════════
 def multilingual_translate(text: str, source_lang: str, destination_language: str) -> str:
-    """
-    Translate text from source_language to destination_language using ChatOpenAI.
-    Also converts numeric values to the numeral system of the destination language.
-    """
-    system_msg = "You are a highly accurate multilingual translator."
+    if source_lang.strip().lower() == destination_language.strip().lower():
+        return text
     user_prompt = (
-        f"You are a precise multilingual translator.\n"
         f"Translate the following text from {source_lang} to {destination_language}.\n"
-        f"Translate all content accurately, including numerical values into the numeral system of the destination language.\n"
-        f"Do not omit, add, or interpret anything.\n\n"
-        f"Original Text ({source_lang}):\n{text}\n\n"
-        f"Translated Text ({destination_language}):"
+        f"Rules:\n"
+        f"- Translate all content accurately.\n"
+        f"- CRITICAL: Keep ALL numeric digits exactly as Arabic numerals (0-9). "
+        f"Do NOT spell out numbers as words and do NOT use other numeral systems.\n"
+        f"- Do not omit, add, or interpret anything.\n\n"
+        f"Original ({source_lang}):\n{text}\n\n"
+        f"Translation ({destination_language}):"
     )
-
     response = LLM.invoke([
-        SystemMessage(content=system_msg),
-        HumanMessage(content=user_prompt)
+        SystemMessage(content="You are a highly accurate multilingual translator."),
+        HumanMessage(content=user_prompt),
     ])
-
     return response.content.strip()
 
-# Define Tools
-def retrieve_from_pdf(query: str, vectordb, image_data) -> dict:
-    logger.info(f"Retrieving content for query: {query}")
+
+# ══════════════════════════════════════════════════════════════════
+# Retrieval helpers
+# ══════════════════════════════════════════════════════════════════
+def retrieve_from_pdf(query: str, vectordb, image_data: dict) -> dict:
+    """
+    Vectordb similarity search.
+    Returns content, integer page_num, and images ONLY from that exact page.
+    has_images = True only when diagrams actually exist on the retrieved page.
+    """
+    logger.info(f"Retrieving for query: {query}")
     docs = vectordb.similarity_search(query, k=3)
     if docs:
         doc = docs[0]
-        page_num = doc.metadata["page_num"]
+        page_num: int = int(doc.metadata["page_num"])    # guaranteed int
         content = f"Page {page_num}: {doc.page_content}"
-        images = image_data.get(page_num, [])
-        logger.info(f"Retrieved content from page {page_num}, found {len(images)} images")
-        return {"content": content, "page_num": page_num, "image_data": images}
-    logger.warning("No content retrieved for query")
-    return {"content": "No content retrieved.", "page_num": None, "image_data": []}
+        images = image_data.get(page_num, [])            # [] when no diagrams
+        logger.info(f"Retrieved page {page_num} — images on this page: {len(images)}")
+        return {
+            "content":    content,
+            "page_num":   page_num,
+            "image_data": images,
+            "has_images": len(images) > 0,
+        }
+    logger.warning("No content retrieved")
+    return {"content": "No content retrieved.", "page_num": None,
+            "image_data": [], "has_images": False}
+
 
 def augment_with_context(content: str, page_num: Optional[int]) -> str:
-    logger.info(f"Augmenting content for page {page_num}")
-    if content != "No content retrieved." and page_num:
-        augmented_content = f"{content}\n\nAdditional context: Sourced from page {page_num}."
-        logger.info("Content augmented successfully")
-        return augmented_content
-    logger.warning("No content to augment")
+    if page_num:
+        return f"{content}\n\nAdditional context: Sourced from page {page_num}."
     return f"{content}\n\nAdditional context: No specific page identified."
 
-# Define the Agent State
-class AgentState(TypedDict):
-    query: str
-    input_language: str
-    chat_history: List[dict]
-    retrieved_content: Optional[str]
-    page_num: Optional[int]
-    image_data: List[bytes]
-    augmented_content: Optional[str]
-    response: Optional[str]
 
-# Define Agent Prompts
+# ══════════════════════════════════════════════════════════════════
+# Agent State
+# ══════════════════════════════════════════════════════════════════
+class AgentState(TypedDict):
+    query:              str
+    input_language:     str
+    chat_history:       List[dict]
+    retrieved_content:  Optional[str]
+    page_num:           Optional[int]
+    image_data:         List[bytes]
+    has_images:         bool          # True ONLY when retrieved page has real images
+    augmented_content:  Optional[str]
+    response:           Optional[str]
+
+
+# ══════════════════════════════════════════════════════════════════
+# Agent Prompts  (all three fully defined)
+# ══════════════════════════════════════════════════════════════════
+
+# ── 1. Retrieve Agent Prompt ─────────────────────────────────────
 RETRIEVE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
-        You are the Retrieve Agent. Your task is to assist in fetching the most relevant text and images from a PDF based on the user's query.
-        - The query is provided in English after translation if needed.
-        - The retrieval function will provide content and a single page number.
-        - Format the output as 'Page X: [content]' if content is found, or 'No content retrieved.' if none is found.
-        - Use the chat history to maintain context.
-    """),
+You are the Retrieve Agent for a DBMS AI Tutor system.
+
+Your sole responsibility is to identify and return the most relevant content
+from the DBMS textbook for the user's query.
+
+Rules:
+- The query you receive is always in English.
+- Analyse the query and determine what DBMS topic is being asked about.
+- Format your output as: 'Page X: [content summary]' when content is found.
+- If no relevant content exists, output exactly: 'No content retrieved.'
+- Use chat history to understand follow-up or contextual questions.
+- Do NOT attempt to answer the question — only retrieve and format.
+- Do NOT add any explanation, greeting, or extra text.
+"""),
     MessagesPlaceholder(variable_name="chat_history"),
-    ("human", "{query}"),
+    ("human", "Retrieve content for this query: {query}"),
 ])
 
+# ── 2. Augment Agent Prompt ──────────────────────────────────────
 AUGMENT_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
-        You are the Augment Agent. Your task is to enhance the retrieved content by adding a clear reference to the page number.
-        - If content is available, return the content followed by 'Sourced from page X.' where X is the page number.
-        - If no content is retrieved or the page number is missing, return 'No augmented content.'
-        - Use the chat history to ensure consistency.
-    """),
+You are the Augment Agent for a DBMS AI Tutor system.
+
+Your sole responsibility is to enrich retrieved content with clear source
+attribution so the Generate Agent can cite it properly.
+
+Rules:
+- If content is available and a page number is given, return:
+  [original content]
+  Sourced from page [X].
+  where [X] is the EXACT INTEGER provided — NEVER write it as a word.
+- If content is 'No content retrieved.' or page number is unknown, return exactly:
+  No augmented content.
+- Do NOT summarise, rewrite, or answer the question.
+- Do NOT add any extra explanation or formatting.
+- Use chat history only to stay consistent with prior turns.
+"""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "Retrieved content: {retrieved_content}\nPage number: {page_num}"),
 ])
 
+# ── 3. Generate Agent Prompt ─────────────────────────────────────
 GENERATE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """
-        You are an expert AI Tutor for Database Management Systems (DBMS).
-        Provide clear, detailed, and accurate answers strictly based on the given content.
-        
-        Important Rules:
-        - Never mention page numbers, sources, diagrams, or images.
-        - Do not write anything like "Source:", "Page", "diagram available", etc.
-        - If the question is not related to DBMS/SQL, reply only: "Not applicable"
-        - Just give the clean educational answer.
-        -do not display page number in text based.
-    """),
+You are an expert AI Tutor specialising in Database Management Systems (DBMS).
+
+Your responsibility is to provide clear, accurate, and detailed answers
+strictly based on the book content provided to you.
+
+Critical Rules:
+- Answer ONLY from the provided book content — do not use outside knowledge.
+- NEVER mention page numbers, sources, diagrams, images, or figures in your answer.
+- NEVER write 'Source:', 'Page', 'diagram available', 'figure', or similar.
+- Give a clean, well-structured educational answer only.
+- For follow-up questions, use the chat history to maintain context.
+- If the question is completely unrelated to DBMS/SQL/databases/data topics,
+  reply with ONLY this single token (nothing else): NOT_APPLICABLE
+"""),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "User Query: {query}\n\nContent from book:\n{augmented_content}"),
 ])
 
-# Define Multi-Agent Nodes
+
+# ══════════════════════════════════════════════════════════════════
+# Shared utility
+# ══════════════════════════════════════════════════════════════════
+def _build_lc_history(chat_history: List[dict]) -> List:
+    """Convert raw dict list to LangChain HumanMessage / AIMessage objects."""
+    messages = []
+    for msg in chat_history:
+        if msg.get("type") == "human":
+            messages.append(HumanMessage(content=msg["content"]))
+        else:
+            messages.append(AIMessage(content=msg["content"]))
+    return messages
+
+
+# ══════════════════════════════════════════════════════════════════
+# Agent Nodes
+# ══════════════════════════════════════════════════════════════════
 def retrieve_agent(state: AgentState) -> AgentState:
-    logger.info(f"Retrieve Agent processing query: {state['query']}")
-    query_in_english = multilingual_translate(state["query"], source_lang=state["input_language"], destination_language="English")
-    retrieved = retrieve_from_pdf(query_in_english, st.session_state.vectordb, st.session_state.image_data)
-    logger.info(f"Retrieve Agent completed for page {retrieved['page_num']}")
+    logger.info("── Retrieve Agent: start ──")
+
+    # Translate query to English for reliable semantic search
+    english_query = multilingual_translate(
+        state["query"], state["input_language"], "English"
+    )
+    logger.info(f"English query: {english_query}")
+
+    # Run RETRIEVE_PROMPT through LLM (contextual intent clarification)
+    lc_history = _build_lc_history(state["chat_history"])
+    retrieve_chain = RETRIEVE_PROMPT | LLM | StrOutputParser()
+    llm_retrieve_output = retrieve_chain.invoke({
+        "query":        english_query,
+        "chat_history": lc_history,
+    })
+    logger.info(f"Retrieve LLM output (intent): {llm_retrieve_output[:120]}...")
+
+    # Actual retrieval from vectordb (ground truth — not LLM hallucination)
+    retrieved = retrieve_from_pdf(
+        english_query,
+        st.session_state.vectordb,
+        st.session_state.image_data,
+    )
+
+    logger.info(
+        f"── Retrieve Agent: done — page={retrieved['page_num']}, "
+        f"has_images={retrieved['has_images']} ──"
+    )
     return {
         "retrieved_content": retrieved["content"],
-        "page_num": retrieved["page_num"],
-        "image_data": retrieved["image_data"]
+        "page_num":          retrieved["page_num"],
+        "image_data":        retrieved["image_data"],
+        "has_images":        retrieved["has_images"],
     }
 
+
 def augment_agent(state: AgentState) -> AgentState:
-    logger.info("Augment Agent processing content")
-    if state["retrieved_content"] and state["retrieved_content"] != "No content retrieved.":
-        augmented_content = augment_with_context(state["retrieved_content"], state["page_num"])
+    logger.info("── Augment Agent: start ──")
+
+    page_num = force_int_page(state.get("page_num"))
+    lc_history = _build_lc_history(state["chat_history"])
+
+    # Run AUGMENT_PROMPT through LLM (for structured formatting)
+    augment_chain = AUGMENT_PROMPT | LLM | StrOutputParser()
+    augment_chain.invoke({
+        "retrieved_content": state.get("retrieved_content", "No content retrieved."),
+        "page_num":          str(page_num) if page_num else "unknown",
+        "chat_history":      lc_history,
+    })
+    # We build augmented_content ourselves to guarantee integer page_num in the string
+    content = state.get("retrieved_content") or ""
+    if content and content != "No content retrieved.":
+        augmented = augment_with_context(content, page_num)
     else:
-        augmented_content = "No augmented content."
-    logger.info("Augment Agent completed")
-    return {"augmented_content": augmented_content}
+        augmented = "No augmented content."
+
+    logger.info(f"── Augment Agent: done — page_num={page_num} ──")
+    return {"augmented_content": augmented, "page_num": page_num}
+
 
 def generate_agent(state: AgentState) -> AgentState:
-    logger.info("Generate Agent: Starting")
-    chain = GENERATE_PROMPT | LLM
-
+    logger.info("── Generate Agent: start ──")
     try:
-        # Always translate query to English for best understanding
-        english_query = multilingual_translate(state["query"], state["input_language"], "English")
+        english_query = multilingual_translate(
+            state["query"], state["input_language"], "English"
+        )
+        lc_history = _build_lc_history(state["chat_history"])
 
-        response = chain.invoke({
-            "query": english_query,
-            "augmented_content": state["augmented_content"] or "No relevant content.",
-            "chat_history": state["chat_history"]
-        })
+        generate_chain = GENERATE_PROMPT | LLM | StrOutputParser()
+        raw_answer = generate_chain.invoke({
+            "query":             english_query,
+            "augmented_content": state.get("augmented_content") or "No relevant content.",
+            "chat_history":      lc_history,
+        }).strip()
 
-        raw_answer = response.content.strip()
+        # ── Off-topic check ──────────────────────────────────────────────
+        if "NOT_APPLICABLE" in raw_answer.upper():
+            final_answer = multilingual_translate(
+                "This topic is not covered in the DBMS book.",
+                "English", state["input_language"],
+            )
+            logger.info("── Generate Agent: off-topic ──")
+            return {"response": final_answer, "page_num": None,
+                    "image_data": [], "has_images": False}
 
-        # Detect off-topic
-        if "not applicable" in raw_answer.lower():
-            final_answer = multilingual_translate("This topic is not covered in the book.", "English", state["input_language"])
-            final_page = None
-            images = []
+        # ── Translate answer to user's language ──────────────────────────
+        final_answer = multilingual_translate(raw_answer, "English", state["input_language"])
+
+        # ── Resolve page_num — always force to int ───────────────────────
+        page_num: Optional[int] = force_int_page(state.get("page_num"))
+
+        # Fallback: use last known page from session message history
+        if page_num is None:
+            for msg in reversed(st.session_state.messages):
+                if msg["role"] == "assistant" and isinstance(msg.get("page_num"), int):
+                    page_num = msg["page_num"]
+                    logger.info(f"Fell back to previous page_num: {page_num}")
+                    break
+
+        # ── Build source line — digit always preserved ───────────────────
+        if isinstance(page_num, int) and page_num > 0:
+            source_en = f"Source: Page {page_num}"
         else:
-            # Translate the clean answer
-            final_answer = multilingual_translate(raw_answer, "English", state["input_language"])
+            source_en = "Source: Page not specified"
+            page_num  = None
 
-            # THIS IS THE ONLY PLACE WHERE SOURCE IS ADDED — 100% CONTROLLED BY CODE
-            page_num = state.get("page_num")  # This comes from retrieval
+        translated_source = multilingual_translate(
+            source_en, "English", state["input_language"]
+        )
 
-            # If retrieval found nothing new in follow-up → fall back to last known page from history
-            if page_num is None and st.session_state.messages:
-                # Look back in history for last valid page number
-                for msg in reversed(st.session_state.messages):
-                    if msg["role"] == "assistant" and msg.get("page_num") is not None:
-                        page_num = msg["page_num"]
-                        break
+        # Safety net: if digit was lost during translation, forcibly re-insert it
+        if page_num is not None and not re.search(r"\d+", translated_source):
+            # Try to replace a word-number that matches our page_num
+            translated_source = re.sub(
+                r"(Page|पृष्ठ|পৃষ্ঠা|पान|பக்கம்|పేజీ|ಪುಟ|താൾ)\s*\S*",
+                lambda m: f"{m.group(1)} {page_num}",
+                translated_source,
+            )
+            # Absolute fallback: append digit at end
+            if not re.search(r"\d+", translated_source):
+                translated_source = translated_source.rstrip() + f" {page_num}"
 
-            # Final source line — ALWAYS numeric, NEVER from LLM
-            if page_num is not None and page_num > 0:
-                source_line = f"Source: Page {page_num}"
-            else:
-                source_line = "Source: Page not specified"
+        final_answer += f"\n\n{translated_source}"
 
-            translated_source = multilingual_translate(source_line, "English", state["input_language"])
-            final_answer += f"\n\n{translated_source}"
+        # ── Images — ONLY when the retrieved page actually has diagrams ───
+        # has_images is set by retrieve_agent directly from image_data dict lookup
+        has_images: bool       = state.get("has_images", False)
+        images: List[bytes]    = state.get("image_data", []) if has_images else []
 
-            # Images
-            images = state.get("image_data", [])
-            if images:
-                img_note = "Relevant diagrams are available for this topic."
-                final_answer += f"\n\n{multilingual_translate(img_note, 'English', state['input_language'])}"
+        if has_images and images:
+            img_note = multilingual_translate(
+                "Relevant diagrams are available for this topic.",
+                "English", state["input_language"],
+            )
+            final_answer += f"\n\n{img_note}"
+            logger.info(f"Image note added — {len(images)} image(s) from page {page_num}")
+        else:
+            logger.info(
+                f"No image note — has_images={has_images}, "
+                f"image count={len(state.get('image_data', []))}"
+            )
 
+        logger.info(f"── Generate Agent: done — page={page_num}, images={len(images)} ──")
         return {
-            "response": final_answer,
-            "page_num": page_num if page_num else None,   # preserve for next turn
-            "image_data": images
+            "response":   final_answer,
+            "page_num":   page_num,
+            "image_data": images,
+            "has_images": has_images and len(images) > 0,
         }
 
     except Exception as e:
-        logger.error(f"Generate agent error: {e}")
-        err = multilingual_translate("Sorry, something went wrong.", "English", state["input_language"])
-        return {"response": err, "page_num": None, "image_data": []}
+        logger.error(f"Generate Agent error: {e}", exc_info=True)
+        err = multilingual_translate(
+            "Sorry, something went wrong. Please try again.",
+            "English", state["input_language"],
+        )
+        return {"response": err, "page_num": None, "image_data": [], "has_images": False}
 
-# Define Conditional Edge Logic
+
+# ══════════════════════════════════════════════════════════════════
+# Conditional edge
+# ══════════════════════════════════════════════════════════════════
 def decide_augmentation(state: AgentState) -> str:
-    logger.info("Deciding augmentation path")
-    if state["retrieved_content"] and state["retrieved_content"] != "No content retrieved.":
-        logger.info("Proceeding to augmentation")
+    content = state.get("retrieved_content") or ""
+    if content and content != "No content retrieved.":
+        logger.info("Edge decision → augmentation")
         return "augmentation"
-    logger.info("Proceeding to generation")
+    logger.info("Edge decision → generation (no content)")
     return "generation"
 
-# Build and Compile the LangGraph Workflow
+
+# ══════════════════════════════════════════════════════════════════
+# Build LangGraph workflow
+# ══════════════════════════════════════════════════════════════════
 workflow = StateGraph(AgentState)
 workflow.add_node("retrieve_agent", retrieve_agent)
-workflow.add_node("augment_agent", augment_agent)
+workflow.add_node("augment_agent",  augment_agent)
 workflow.add_node("generate_agent", generate_agent)
 workflow.set_entry_point("retrieve_agent")
 workflow.add_conditional_edges(
     "retrieve_agent",
     decide_augmentation,
-    {
-        "augmentation": "augment_agent",
-        "generation": "generate_agent"
-    }
+    {"augmentation": "augment_agent", "generation": "generate_agent"},
 )
-workflow.add_edge("augment_agent", "generate_agent")
+workflow.add_edge("augment_agent",  "generate_agent")
 workflow.add_edge("generate_agent", END)
 agent = workflow.compile()
 
-# Streamlit UI Configuration
+
+# ══════════════════════════════════════════════════════════════════
+# Streamlit UI
+# ══════════════════════════════════════════════════════════════════
+def display_chat_history():
+    """Re-render full conversation with images persisted per turn."""
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+            if message["role"] == "assistant":
+                page_num      = message.get("page_num")           # int or None
+                image_indices = message.get("image_indices", [])  # [] when no images
+
+                # Show images only when this specific turn had images
+                if page_num and image_indices:
+                    page_images = st.session_state.image_data.get(page_num, [])
+                    for idx in image_indices:
+                        if idx < len(page_images):
+                            try:
+                                st.image(
+                                    io.BytesIO(page_images[idx]),
+                                    caption=f"Diagram — Page {page_num}",
+                                    use_container_width=True,
+                                )
+                            except Exception as e:
+                                logger.error(f"Image re-render error: {e}")
+                                st.warning("Could not re-display image.")
+
+
 def main():
-    logger.info("Starting Streamlit application")
-    # Page configuration
+    logger.info("Starting AI Professor Assistant")
     st.set_page_config(page_title="📚 AI Professor Assistant", layout="wide")
     st.title("📚 AI Professor Assistant")
     st.markdown(
-        "Ask any question from your book in any language, and get detailed answers "
-        "with a single source page and relevant images!"
+        "Ask any question from your **DBMS book** in any language. "
+        "You will get detailed answers with source page numbers and diagrams "
+        "**only when diagrams exist on that page**."
     )
 
-    # Sidebar - Language Selection
+    # ── Sidebar ──────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("🗣️ Language Settings")
         input_language = st.selectbox(
-            "Select Language",
-            ["English", "Tamil", "Marathi", "Malayalam", "Telugu", "Hindi", "Kannada", "Gujarati", "Bengali"]
+            "Select your language",
+            [
+                "English", "Hindi", "Bengali", "Tamil", "Telugu",
+                "Marathi", "Kannada", "Malayalam", "Gujarati",
+            ],
+        )
+        st.markdown("---")
+        if st.button("🗑️ Clear Conversation"):
+            st.session_state.messages = []
+            st.rerun()
+        st.markdown("---")
+        st.caption(
+            "ℹ️ Diagrams are shown only when they exist on the retrieved page. "
+            "Pages without images will not show any diagram note."
         )
 
-    # Initialize session state
+    # ── Session initialisation ────────────────────────────────────────────
     if "vectordb" not in st.session_state:
-        logger.info("Initializing vector database and image data")
-        with st.spinner("Loading PDF content and images... This may take a minute."):
+        with st.spinner("⏳ Loading PDF and building search index… (first run only)"):
             try:
-                st.session_state.vectordb = create_vectordb(PDF_FILE_PATH)
+                st.session_state.vectordb   = create_vectordb(PDF_FILE_PATH)
                 st.session_state.image_data = extract_images_from_pdf(PDF_FILE_PATH)
-                logger.info("Session state initialized successfully")
+                logger.info("Session state initialised successfully")
             except Exception as e:
-                logger.error(f"Failed to load PDF or images: {e}")
-                st.error(f"Failed to load PDF or images: {e}")
+                logger.error(f"Initialisation failed: {e}")
+                st.error(f"Failed to load PDF: {e}")
                 st.stop()
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
-        logger.info("Initialized empty message history")
 
-    # Display chat history
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if message["role"] == "assistant" and "image_indices" in message:
-                page_num = message.get("page_num")
-                if page_num in st.session_state.image_data:
-                    for idx in message["image_indices"]:
-                        if idx < len(st.session_state.image_data[page_num]):
-                            image_bytes = st.session_state.image_data[page_num][idx]
-                            try:
-                                st.image(io.BytesIO(image_bytes), caption="Relevant image")
-                                logger.info(f"Displayed image {idx} for page {page_num}")
-                            except Exception as e:
-                                logger.error(f"Failed to display image: {e}")
-                                st.warning(f"Failed to display image: {e}")
+    # ── Render existing conversation ──────────────────────────────────────
+    display_chat_history()
 
-    # User input
-    user_input = st.chat_input("Ask anything from the PDF in any language")
-    if user_input:
-        logger.info(f"User query received: {user_input} (Language: {input_language})")
-        st.session_state.messages.append({"role": "user", "content": user_input})
+    # ── Chat input ────────────────────────────────────────────────────────
+    user_input = st.chat_input("Ask anything from the DBMS book in any language…")
+    if not user_input:
+        return
 
-        with st.chat_message("user"):
-            st.markdown(user_input)
+    logger.info(f"User query: '{user_input}' | Language: {input_language}")
 
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            chat_history = [
-    {"type": "human" if msg["role"] == "user" else "ai", "content": msg["content"]}
-    for msg in st.session_state.messages  # Now includes the latest user message too
-]
-            initial_state = {
-                "query": user_input,
-                "input_language": input_language,
-                "chat_history": chat_history,
-                "retrieved_content": None,
-                "page_num": None,
-                "image_data": [],
-                "augmented_content": None,
-                "response": None
-            }
+    # Save and display user message
+    st.session_state.messages.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-            with st.spinner("Processing..."):
-                try:
-                    logger.info("Invoking agent workflow")
-                    final_state = agent.invoke(initial_state)
-                    answer = final_state["response"]
-                    formatted_answer = format_for_display(answer)
-                    message_placeholder.markdown(formatted_answer)
-                    logger.info(f"Response displayed: {formatted_answer[:50]}...")
+    # ── Build multi-turn history (all messages except current user turn) ──
+    chat_history: List[dict] = []
+    for msg in st.session_state.messages[:-1]:
+        chat_history.append({
+            "type":    "human" if msg["role"] == "user" else "ai",
+            "content": msg["content"],
+        })
 
-                    # Show images only if answer is relevant
-                    image_indices = []
-                    if "Not applicable" not in answer and final_state["image_data"]:
-                        page_num = final_state["page_num"]
-                        if page_num in st.session_state.image_data:
-                            for idx, image_bytes in enumerate(final_state["image_data"]):
-                                try:
-                                    st.image(io.BytesIO(image_bytes), caption="Relevant image")
-                                    image_indices.append(idx)
-                                    logger.info(f"Displayed image {idx} for page {page_num}")
-                                except Exception as e:
-                                    logger.error(f"Failed to display image: {e}")
-                                    st.warning(f"Failed to display image: {e}")
+    initial_state: AgentState = {
+        "query":             user_input,
+        "input_language":    input_language,
+        "chat_history":      chat_history,
+        "retrieved_content": None,
+        "page_num":          None,
+        "image_data":        [],
+        "has_images":        False,
+        "augmented_content": None,
+        "response":          None,
+    }
 
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": formatted_answer,
-                        "page_num": final_state["page_num"],
-                        "image_indices": image_indices
-                    })
-                    logger.info(f"Message history updated with response for page {final_state['page_num']}")
+    # ── Run agent and render response ─────────────────────────────────────
+    with st.chat_message("assistant"):
+        placeholder = st.empty()
+        with st.spinner("Thinking…"):
+            try:
+                final_state      = agent.invoke(initial_state)
+                answer: str      = final_state["response"]
+                formatted_answer = format_for_display(answer)
+                placeholder.markdown(formatted_answer)
 
-                except Exception as e:
-                    logger.error(f"Error processing query: {e}")
-                    error_msg = multilingual_translate(
-                        f"Error processing query: {e}",
-                        source_lang="English",
-                        destination_language=input_language
-                    )
-                    st.error(error_msg)
+                page_num: Optional[int]      = final_state.get("page_num")    # int or None
+                image_data_turn: List[bytes] = final_state.get("image_data", [])
+                has_images: bool             = final_state.get("has_images", False)
+                image_indices: List[int]     = []
 
-# Run the app
+                # ── Show images ONLY when ALL conditions are true:
+                #    1. Answer is on-topic (not off-topic / not-covered)
+                #    2. has_images is True  (page actually has diagrams in the PDF)
+                #    3. image bytes list is non-empty
+                #    4. page_num is a valid integer
+                is_off_topic = (
+                    "NOT_APPLICABLE" in answer.upper()
+                    or "not covered" in answer.lower()
+                )
+
+                if (not is_off_topic
+                        and has_images
+                        and image_data_turn
+                        and page_num is not None):
+                    for idx, img_bytes in enumerate(image_data_turn):
+                        try:
+                            st.image(
+                                io.BytesIO(img_bytes),
+                                caption=f"Diagram — Page {page_num}",
+                                use_container_width=True,
+                            )
+                            image_indices.append(idx)
+                            logger.info(f"Displayed image {idx} from page {page_num}")
+                        except Exception as img_err:
+                            logger.error(f"Image display error: {img_err}")
+                            st.warning("Could not display one of the diagrams.")
+                else:
+                    # Detailed log so you know exactly why images were suppressed
+                    if is_off_topic:
+                        logger.info("Images suppressed — off-topic answer")
+                    elif not has_images:
+                        logger.info(
+                            f"Images suppressed — page {page_num} has no diagrams in PDF"
+                        )
+                    elif not image_data_turn:
+                        logger.info("Images suppressed — image_data list is empty")
+
+                # ── Persist assistant message with full metadata ───────────────
+                st.session_state.messages.append({
+                    "role":          "assistant",
+                    "content":       formatted_answer,
+                    "page_num":      page_num,        # always int or None
+                    "image_indices": image_indices,   # [] when no images shown
+                })
+                logger.info(
+                    f"Saved response — page={page_num}, "
+                    f"images_shown={len(image_indices)}"
+                )
+
+            except Exception as e:
+                logger.error(f"Query processing error: {e}", exc_info=True)
+                err_msg = multilingual_translate(
+                    f"An error occurred while processing your query: {e}",
+                    "English", input_language,
+                )
+                st.error(err_msg)
+
+
 if __name__ == "__main__":
     main()
-
-    
-
-
-
-
-
-
-
-
-
-
-
