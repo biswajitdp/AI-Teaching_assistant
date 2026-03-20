@@ -341,8 +341,8 @@ agent = workflow.compile()
 def main():
     logger.info("Starting Streamlit application")
     # Page configuration
-    st.set_page_config(page_title="📚 AI Tutor Agent", layout="wide")
-    st.title("📚 AI Tutor Agent")
+    st.set_page_config(page_title="📚 AI Professor Assistant", layout="wide")
+    st.title("📚 AI Professor Assistant")
     st.markdown(
         "Ask any question from your book in any language, and get detailed answers "
         "with a single source page and relevant images!"
