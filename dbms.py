@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 PDF_FILE_PATH  = "dbms_notes.pdf"           # ← replace with your PDF path
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-LLM            = ChatOpenAI(model_name="gpt-5.4-mini", temperature=0.0, api_key=OPENAI_API_KEY)
+LLM =ChatOpenAI(model_name="gpt-5.4-mini", temperature=0.0, api_key=OPENAI_API_KEY)
 
 # ══════════════════════════════════════════════════════════════════
 # Word-number → integer helpers
